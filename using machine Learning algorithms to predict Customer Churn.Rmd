@@ -1,0 +1,569 @@
+---
+title: "Predicting Customer Churn using Machine Learning Algorithms"
+author: "Uche Kalu"
+date: "4/4/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+#### **We are going to Predict Customer Churn using Telecom dataset. We will introduce Logistic Regression, Decision Tree, and Random Forest.**
+
+**Customer churn, also known as *customer attrition*, occurs when customers or subscribers stop doing business with a company or service, .**
+
+**It is also referred as loss of clients or customers.**
+
+**One industry in which churn rates are particularly useful is the telecommunications industry, because most customers have multiple options from which to choose within a geographic location.**
+
+```{r results='hide', message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(gridExtra)
+library(ggthemes)
+library(caret)
+library(MASS)
+library(randomForest)
+library(party)
+```
+
+### DATA
+
+```{r save, message=FALSE, warning=FALSE}
+mychurn <- read.csv('WA_Fn-UseC_-Telco-Customer-Churn.csv')
+str(mychurn)
+```
+
+-   customerID
+
+-   gender (female, male)
+
+-   SeniorCitizen (Whether the customer is a senior citizen or not (1, 0))
+
+-   Partner (Whether the customer has a partner or not (Yes, No))
+
+-   Dependents (Whether the customer has dependents or not (Yes, No))
+
+-   tenure (Number of months the customer has stayed with the company)
+
+-   PhoneService (Whether the customer has a phone service or not (Yes, No))
+
+-   MultipleLines (Whether the customer has multiple lines r not (Yes, No, No phone service)
+
+-   InternetService (Customers internet service provider (DSL, Fiber optic, No)
+
+-   OnlineSecurity (Whether the customer has online security or not (Yes, No, No internet service)
+
+-   OnlineBackup (Whether the customer has online backup or not (Yes, No, No internet service)
+
+-   DeviceProtection (Whether the customer has device protection or not (Yes, No, No internet service)
+
+-   TechSupport (Whether the customer has tech support or not (Yes, No, No internet service)
+
+-   streamingTV (Whether the customer has streaming TV or not (Yes, No, No internet service)
+
+-   streamingMovies (Whether the customer has streaming movies or not (Yes, No, No internet service)
+
+-   Contract (The contract term of the customer (Month-to-month, One year, Two year)
+
+-   PaperlessBilling (Whether the customer has paperless billing or not (Yes, No))
+
+-   PaymentMethod (The customers payment method (Electronic check, Mailed check, Bank transfer (automatic), Credit card (automatic)))
+
+-   MonthlyCharges (The amount charged to the customer monthly - numeric)
+
+-   TotalCharges (The total amount charged to the customer - numeric)
+
+-   Churn ( Whether the customer churned or not (Yes or No))
+
+The raw data contains 7043 rows (customers) and 21 columns (features). The **Churn** column is our target.
+
+```{r results='hide'}
+mychurn <- mychurn |> mutate(across(c(customerID, gender, Partner, Dependents, 
+                                      PhoneService:PaymentMethod, Churn), 
+                                    as.factor))
+
+```
+
+### Checking for Missing Values
+
+**lets check the number of missing values in each column in the dataset and remove such missing rows of values**
+
+```{r results='hide'}
+sapply(mychurn, function(x) sum(is.na(x)))
+
+mychurn <- mychurn[complete.cases(mychurn),]
+```
+
+```{r}
+sapply(mychurn, function(x) sum(is.na(x)))
+```
+
+### Data Wrangling
+
+**We will re-code some values in some columns and turn some values into intervals/groups**
+
+```{r results='hide', warning=TRUE, message=FALSE}
+unique(mychurn['OnlineSecurity'])
+
+cols_recode1 <- c(10:15)  
+for (i in 1:ncol(mychurn[, cols_recode1])) {
+  mychurn[, cols_recode1][, i] <- as.factor(
+    mapvalues(mychurn[, cols_recode1][, i],                                                       from = c("No internetservice"), to = c("No")))  
+}
+
+mychurn$MultipleLines <- as.factor(
+  mapvalues(mychurn$MultipleLines, from = c("No phone service"), to = c("No")))
+
+min(mychurn$tenure); max(mychurn$tenure)
+
+group_tenure <- function(tenure){
+  if(tenure >= 0 & tenure <= 12){
+    return('0 - 12 Month')         # 1st group- 0 to 12 months
+  }else if(tenure > 12 & tenure <= 24){
+    return('12 - 24 Month')         # 2st group- 12 to 24 months
+  }else if(tenure > 24 & tenure <= 48){
+    return('24 - 48 Month')         # 3rd group- 24 to 48 months
+  }else if(tenure > 48 & tenure <= 60){
+    return('48 - 60 Month')        # 4th group- 48 to 60 months
+  }else if(tenure > 60){
+    return('> 60 Month')            # 5th group- > 60 months
+  }
+}
+
+mychurn$tenure_group <- sapply(mychurn$tenure, group_tenure)  
+head(mychurn$tenure_group, 10)
+
+mychurn$tenure_group <- as.factor(mychurn$tenure_group)
+
+mychurn$SeniorCitizen <- as.factor(mapvalues(mychurn$SeniorCitizen, from = c("0", "1"), to = c("No", "Yes")))
+
+str(mychurn)
+
+mychurn$customerID <- NULL
+mychurn$tenure <- NULL
+
+```
+
+```{r}
+str(mychurn)
+```
+
+### Exploratory Data Analysis and Feature Selection
+
+**Lets check for Correlation between the numerical variables/columns in the dataset**
+
+```{r results='hide'}
+numeric_var <- sapply(mychurn, is.numeric)  
+numeric_var 
+
+corr_matrix <- cor(mychurn[, numeric_var])  
+corr_matrix
+```
+
+### Visualizing the numerical columns and their correlation values
+
+```{r}
+corrplot(corr_matrix, main = "\n\nCorrelation Plot for Numerical Variables", method = "number") 
+```
+
+**The Monthly Charges and Total Charges are correlated. So one of them will be removed from the model. We remove Total Charges.**
+
+```{r}
+mychurn$TotalCharges <- NULL
+str(mychurn)
+```
+
+### Creating Visualizations
+
+**Creating bar charts for each categorical variable/column(all columns that do not contain numerical values)**
+
+```{r}
+p1 <- ggplot(mychurn, aes(x = gender)) +  # using Gender column 
+  ggtitle("Gender") + xlab("Gender") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) +   
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p2 <- ggplot(mychurn, aes(x = SeniorCitizen)) +  # using SeniorCitizen column 
+  ggtitle("Senior Citizen") + 
+  xlab("Senior Citizen") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) +
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p3 <- ggplot(mychurn, aes(x = Partner)) +  # using Partner column 
+  ggtitle("Partner") +
+  xlab("Partner") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p4 <- ggplot(mychurn, aes(x = Dependents)) +  # using Dependents column 
+  ggtitle("Dependents") +
+  xlab("Dependents") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+
+```{r}
+p5 <- ggplot(mychurn, aes(x = PhoneService)) +  # using PhoneService column 
+  ggtitle("Phone Service") + 
+  xlab("Phone Service") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p6 <- ggplot(mychurn, aes(x = MultipleLines)) +  # using MultipleLines column 
+  ggtitle("Multiple Lines") + 
+  xlab("Multiple Lines") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p7 <- ggplot(mychurn, aes(x = InternetService)) +  # using InternetService column 
+  ggtitle("Internet Service") + 
+  xlab("Internet Service") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p8 <- ggplot(mychurn, aes(x = OnlineSecurity)) +   # using OnlineSecurity column 
+  ggtitle("Online Security") + 
+  xlab("Online Security") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+grid.arrange(p5, p6, p7, p8, ncol=2)
+```
+
+```{r}
+p9 <- ggplot(mychurn, aes( x = OnlineBackup)) +  # using OnlineBackup column 
+  ggtitle("Online Backup") + 
+  xlab("Online Backup") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p10 <- ggplot(mychurn, aes(x = DeviceProtection)) +  # using DeviceProtection 
+  ggtitle("Device Protection") + 
+  xlab("Device Protection") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") + 
+  coord_flip() + 
+  theme_minimal()
+
+
+p11 <- ggplot(mychurn, aes(x = TechSupport)) +  # using TechSupport column 
+  ggtitle("Tech Support") + 
+  xlab("Tech Support") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p12 <- ggplot(mychurn, aes(x = StreamingTV)) +  # using StreamingTV column 
+  ggtitle("Streaming TV") + 
+  xlab("Streaming TV") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+grid.arrange(p9, p10, p11, p12, ncol=2)
+```
+
+```{r}
+p13 <- ggplot(mychurn, aes(x = StreamingMovies)) +  # using StreamingMovies column 
+  ggtitle("Streaming Movies") + 
+  xlab("Streaming Movies") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p14 <- ggplot(mychurn, aes(x = Contract)) +  # using Contract column 
+  ggtitle("Contract") + 
+  xlab("Contract") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() + 
+  theme_minimal()
+
+
+p15 <- ggplot(mychurn, aes(x = PaperlessBilling)) +  # using PaperlessBilling 
+  ggtitle("Paperless Billing") + 
+  xlab("Paperless Billing") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() + 
+  theme_minimal()
+
+
+p16 <- ggplot(mychurn, aes(x = PaymentMethod)) +  # using PaymentMethod column 
+  ggtitle("Payment Method") + 
+  xlab("Payment Method") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() +
+  theme_minimal()
+
+
+p17 <- ggplot(mychurn, aes(x = tenure_group)) +  # using tenure_group column 
+  ggtitle("Tenure Group") + 
+  xlab("Tenure Group") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + 
+  ylab("Percentage") +
+  coord_flip() + 
+  theme_minimal()
+
+
+grid.arrange(p13, p14, p15, p16, p17, ncol=2)
+```
+
+## **Creating Models using Machine Learning algorithms**
+
+### **Logistic Regression**
+
+**First, we split the data into training and testing sets:**
+
+```{r results='hide'}
+intrain <- createDataPartition(mychurn$Churn, 
+                               p = 0.7, list = FALSE)
+
+set.seed(2018)
+
+training <- mychurn[intrain, ]
+testing <- mychurn[- intrain, ]
+
+dim(training); dim(testing)
+
+
+```
+
+**Creating Logistical Regression model**
+
+```{r results='hide'}
+LogModel <- glm(Churn ~ ., family = binomial(link = "logit"),   
+                data = training)
+```
+
+```{r}
+print(summary(LogModel))
+```
+
+#### **Feature Analysis:**
+
+**The top three most-relevant features include Contract, tenure_group and PaperlessBillin**
+
+```{r}
+anova(LogModel, test = "Chisq")
+```
+
+**Assessing the predictive ability of the Logistic Regression model**
+
+**Lets recode some values in some columns**
+
+```{r results='hide', warning=FALSE, message=FALSE}
+testing$Churn <- as.character(testing$Churn)  
+testing$Churn[testing$Churn == "No"] <- "0"   
+testing$Churn[testing$Churn == "Yes"] <- "1"   
+str(testing)
+
+fitted_results <- predict(LogModel, newdata = testing, type = "response")
+head(fitted_results)
+
+fitted_results <- ifelse(fitted_results > 0.5, 1, 0)
+
+misClasificError <- mean(fitted_results != testing$Churn)
+misClasificError
+```
+
+#### Accuracy
+
+```{r}
+print(paste('Logistic Regression Accuracy is: ', 1- misClasificError))
+
+```
+
+#### **Logistic Regression Confusion Matrix**
+
+```{r}
+print("Confusion Matrix for Logistic Regression");
+
+table(testing$Churn, fitted_results > 0.5)
+```
+
+#### Odds Ratio:
+
+**One of the interesting performance measurements in logistic regression is Odds Ratio. Basically, Odds ratio is what the odds of an event is happening**
+
+```{r}
+exp(cbind(OR = coef(LogModel), confint(LogModel)))
+```
+
+### Decision Tree Model
+
+**We are using only the 3 columns - Contract, tenure_group and PaperlessBilling (that we found out was the most significant to the Logistical Regression model earlier) in this Decision Tree model**
+
+```{r results='hide'}
+mytree <- ctree(Churn ~ Contract + tenure_group + PaperlessBilling,  
+                training) 
+```
+
+#### **Decision Tree Visualization**
+
+**From the Decision Tree diagram, the 1st/top column in the diagram is the most important column to the model since it determines which decision will occur(ie Contract column as the 1st/top column is most important to the model)**
+
+**As such Contract column is the most important column to be used to predict Churn column from the three variables we used in the model**
+
+**From the Decision Tree diagram; If a customer has a one-year or two-year contract, no matter if he (she) has PapelessBilling or not, he (she) is less likely to churn (since No probability is much higher than Yes in the stacked bar chart) .**
+
+**If a customer has a month-to-month contract, and is in the tenure group of 0 - 12 month, and using PaperlessBilling, then this customer is more likely to churn (since No probability is not that higher than Yes in the stacked bar chart).**
+
+```{r}
+plot(mytree)
+```
+
+#### **Decision Tree** Prediction on testing data
+
+```{r}
+pred_tree <- predict(mytree, testing)
+```
+
+#### **Decision Tree Confusion Matrix**
+
+```{r}
+print("Confusion Matrix for Decision Tree"); table(Predicted = pred_tree, Actual = testing$Churn)
+
+```
+
+#### Confusion Matrix of testing data
+
+```{r}
+tab2 <- table(Predicted = pred_tree, Actual = testing$Churn)
+
+```
+
+#### **Decision Tree Accuracy**
+
+```{r}
+print(paste('Decision Tree Accuracy', sum(diag(tab2))/sum(tab2)))
+```
+
+#### **Decision Tree** Prediction on training data
+
+```{r}
+p1 <- predict(mytree, training)
+```
+
+#### **Decision Tree Confusion Matrix**
+
+```{r}
+tab1 <- table(Predicted = p1, Actual = training$Churn)
+```
+
+### Random Forest Model
+
+```{r}
+rfModel <- randomForest(Churn ~., data = training)
+print(rfModel)
+```
+
+#### **Random Forest Prediction**
+
+```{r}
+pred_rf <- predict(rfModel, testing)
+```
+
+#### Confusion matrix
+
+```{r}
+table(Predicted = pred_rf, Actual = testing$Churn)
+```
+
+#### **Random Forest Error Rate**
+
+**We use this plot to help us determine the number of trees (you can see trees parameter in x-axis).**
+
+```{r}
+plot(rfModel)
+```
+
+#### Tune Random Forest Model
+
+**We use this plot to give us some ideas on the number of mtry to choose. OOB error rate is at the lowest when mtry is 2. Therefore, we choose mtry=2.**
+
+```{r}
+t <- tuneRF(training[, -18], training[, 18], stepFactor = 0.5, plot = TRUE,
+            ntreeTry = 200, trace = TRUE, improve = 0.05)
+t
+```
+
+#### Create the Random Forest Model after Tuning and getting d optimal mtry value
+
+```{r}
+rfModel_new <- randomForest(Churn ~., data = training, ntree = 200,
+                            mtry = 2, importance = TRUE, proximity = TRUE)
+print(rfModel_new)
+```
+
+#### **Random Forest Predictions** after Tuning
+
+```{r}
+pred_rf_new <- predict(rfModel_new, testing)
+
+```
+
+#### **Random Forest** Confusion matrix after Tuning
+
+```{r}
+table(Predicted = pred_rf_new, Actual = testing$Churn)
+```
+
+#### Random Forest Feature Importance:
+
+**Here we view the columns/variables in order of importance to the model**
+
+```{r}
+varImpPlot(rfModel_new, sort=T, n.var = 10, main = 'Top 10 Feature Importance')
+
+```
+
+## **Summary**
+
+From the above example, we can see that Logistic Regression, Decision Tree and Random Forest can be used for customer churn analysis for this particular dataset equally fine.
+
+Throughout the analysis, we have learned several important things:
+
+-   Features such as tenure_group, Contract, PaperlessBilling, MonthlyCharges and InternetService appear to play a role in customer churn.
+
+\*There does not seem to be a relationship between gender and churn.
+
+-   Customers in a month-to-month contract, with PaperlessBilling and are within 12 months tenure, are more likely to churn; On the other hand, customers with one or two year contract, with longer than 12 months tenure, that are not using PaperlessBilling, are less likely to churn.
